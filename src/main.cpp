@@ -38,7 +38,7 @@ int main() {
     if (!glfwInit()) return 1;
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
-    GLFWwindow* window = glfwCreateWindow(1100, 760, "Merge folders", nullptr, nullptr);
+    GLFWwindow* window = glfwCreateWindow(1100, 760, "Move and merge folders", nullptr, nullptr);
     if (!window) {
         glfwTerminate();
         return 1;

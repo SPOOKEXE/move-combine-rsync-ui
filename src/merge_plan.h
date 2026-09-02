@@ -57,5 +57,10 @@ bool allConflictsResolved(const MergePlan& plan);
 // collision-renamed copies. Generated names never overlap an existing entry.
 bool prepareMerge(MergePlan& plan, std::string& error);
 
+// Rsync removes moved non-directory entries. This removes only directories
+// left empty afterwards, including an empty source root.
+bool removeEmptySourceDirectories(const std::vector<std::string>& sources,
+                                  std::string& error);
+
 std::string formatSize(std::uintmax_t bytes);
 std::string formatTime(std::filesystem::file_time_type time);

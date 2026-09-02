@@ -132,6 +132,7 @@ std::string validateInputs(const std::vector<std::string>& sources,
     }
 
     std::set<std::string> seen;
+    std::vector<fs::path> normalizedSources;
     for (const auto& raw : sources) {
         ec.clear();
         const std::string source = normalized(raw, ec);
@@ -141,6 +142,14 @@ std::string validateInputs(const std::vector<std::string>& sources,
         if (!seen.insert(source).second) return "the same source folder was added twice";
         if (samePathOrNested(source, dest)) {
             return "source and destination folders must not contain each other";
+        }
+        normalizedSources.emplace_back(source);
+    }
+    for (std::size_t i = 0; i < normalizedSources.size(); ++i) {
+        for (std::size_t j = i + 1; j < normalizedSources.size(); ++j) {
+            if (samePathOrNested(normalizedSources[i], normalizedSources[j])) {
+                return "source folders must not contain each other";
+            }
         }
     }
     return {};
@@ -274,6 +283,61 @@ bool prepareMerge(MergePlan& plan, std::string& error) {
     }
     for (auto& paths : plan.exclusions) reducePaths(paths);
     reducePaths(plan.destinationRemovals);
+    error.clear();
+    return true;
+}
+
+bool removeEmptySourceDirectories(const std::vector<std::string>& sources,
+                                  std::string& error) {
+    for (const auto& source : sources) {
+        std::error_code ec;
+        if (!fs::exists(source, ec)) continue;
+        if (ec) {
+            error = "cannot inspect source after move: " + source + ": " + ec.message();
+            return false;
+        }
+
+        std::vector<fs::path> directories;
+        fs::recursive_directory_iterator iterator(
+            source, fs::directory_options::skip_permission_denied, ec);
+        const fs::recursive_directory_iterator end;
+        if (ec) {
+            error = "cannot inspect source after move: " + source + ": " + ec.message();
+            return false;
+        }
+        while (iterator != end) {
+            const fs::file_status status = iterator->symlink_status(ec);
+            if (ec) {
+                error = "cannot inspect source after move: " + iterator->path().string() +
+                        ": " + ec.message();
+                return false;
+            }
+            if (fs::is_directory(status)) directories.push_back(iterator->path());
+            iterator.increment(ec);
+            if (ec) {
+                error = "cannot inspect source after move: " + source + ": " + ec.message();
+                return false;
+            }
+        }
+
+        std::sort(directories.begin(), directories.end(), [](const fs::path& left,
+                                                              const fs::path& right) {
+            return left.native().size() > right.native().size();
+        });
+        for (const auto& directory : directories) {
+            fs::remove(directory, ec);
+            if (ec) {
+                error = "cannot remove empty source folder: " + directory.string() +
+                        ": " + ec.message();
+                return false;
+            }
+        }
+        fs::remove(source, ec);
+        if (ec) {
+            error = "cannot remove empty source folder: " + source + ": " + ec.message();
+            return false;
+        }
+    }
     error.clear();
     return true;
 }

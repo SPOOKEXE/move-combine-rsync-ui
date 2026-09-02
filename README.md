@@ -1,20 +1,29 @@
-# Merge Folders
+# Move and Merge Folders
 
-A small Linux Dear ImGui app for combining several directory trees into one.
+A small Linux Dear ImGui app for moving several directory trees into one.
 It always runs rsync in dry-run mode first, discovers overlapping files and
-file/folder shape clashes, asks which copy to keep, then performs the merge.
+file/folder shape clashes, asks which copy to keep, then performs the move.
 
 ## Behavior
 
-- Add source folders in the order they should be layered.
+- Add source folders in the order they should be moved and layered.
 - Choose one destination folder. A new final folder name may be typed directly.
 - Run the mandatory dry run. No merge button exists before it succeeds.
 - Conflicts default to keeping every copy. Extra copies are renamed with a
   suffix such as `_collision_0001.ext`, skipping names that already exist.
 - Resolve conflicts individually, or use the rename, destination, and latest
   source bulk choices.
-- Merge. Directories and unique files combine automatically. No unrelated
+- Move. Directories and unique files combine automatically. No unrelated
   destination files are deleted.
+
+Successful rsync transfers use `--remove-source-files`. Once every transfer has
+succeeded, the app removes source directories only when they are empty. Files
+excluded by a conflict choice remain in their source tree. Source trees must be
+idle while moving, since rsync cannot safely remove a file that another program
+is still writing.
+
+Local moves explicitly use `--whole-file` and `--no-compress`. This avoids CPU
+work for delta matching and compression that does not help local disk moves.
 
 Source paths use a trailing slash when passed to rsync, so the contents of each
 folder land directly in the destination. Rsync is launched with `fork` and

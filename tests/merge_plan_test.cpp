@@ -86,6 +86,11 @@ int main() {
     const auto dry = buildRsyncArgs(a.string(), out.string(), {}, RsyncMode::DryRun);
     check(std::find(dry.begin(), dry.end(), "--dry-run") != dry.end(),
           "dry run argv cannot write");
+    check(std::find(dry.begin(), dry.end(), "--remove-source-files") != dry.end(),
+          "rsync owns source file removal");
+    check(std::find(dry.begin(), dry.end(), "--whole-file") != dry.end() &&
+              std::find(dry.begin(), dry.end(), "--no-compress") != dry.end(),
+          "local move uses fast whole-file options");
     check(dry[dry.size() - 2].back() == '/', "source contents use a trailing slash");
 
     check(runRsync(dry, {}) == 0, "real rsync dry run succeeds");
@@ -101,6 +106,9 @@ int main() {
         if (!exclude.empty()) std::remove(exclude.c_str());
     }
     check(fs::exists(out / "only-a.txt"), "unique files are merged");
+    check(!fs::exists(a / "only-a.txt"), "successfully moved unique file leaves source");
+    check(fs::exists(a / "same.txt"), "unchosen conflict file stays in source");
+    check(!fs::exists(b / "same.txt"), "chosen conflict file leaves source");
     check(fs::is_directory(out / "shape"), "chosen folder replaces destination file");
     check(fs::exists(out / "shape" / "child.txt"), "chosen folder contents are copied");
     {
@@ -118,6 +126,8 @@ int main() {
 
     check(!validateInputs({a.string()}, (a / "nested").string()).empty(),
           "nested destination is rejected");
+    check(!validateInputs({a.string(), (a / "shared-dir").string()}, out.string()).empty(),
+          "nested source roots are rejected for moves");
     const fs::path newOutput = root / "new-output";
     check(validateInputs({a.string()}, newOutput.string()).empty(),
           "a new destination below an existing parent is allowed");
@@ -160,6 +170,12 @@ int main() {
                                           RsyncMode::Merge), {}) == 0,
               "collision-renamed rsync copy succeeds");
     }
+    check(!fs::exists(renameA / "report.txt") && !fs::exists(renameB / "report.txt"),
+          "collision-renamed files leave their sources");
+    check(removeEmptySourceDirectories(renamePlan.sources, error),
+          "empty source directory cleanup succeeds");
+    check(!fs::exists(renameA) && !fs::exists(renameB),
+          "empty source roots are removed after a complete move");
     {
         std::ifstream original(renameOut / "report.txt");
         std::ifstream first(renameOut / "report_collision_0002.txt");

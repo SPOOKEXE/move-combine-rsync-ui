@@ -140,7 +140,7 @@ void startMerge(AppState& state) {
         plan = state.worker.plan;
         state.worker.phase = AppPhase::Merging;
         state.worker.progress = 0.0f;
-        state.worker.status = "Merging folders";
+        state.worker.status = "Moving folders";
     }
 
     state.thread = std::thread([&state, plan = std::move(plan)]() mutable {
@@ -170,7 +170,7 @@ void startMerge(AppState& state) {
             {
                 std::lock_guard lock(state.mutex);
                 state.worker.currentSource = static_cast<int>(i);
-                state.worker.status = "Merging " + std::to_string(i + 1) + " of " +
+                state.worker.status = "Moving " + std::to_string(i + 1) + " of " +
                                       std::to_string(plan.sources.size());
                 addLog(state.worker, "$ " + displayCommand(args));
             }
@@ -191,15 +191,15 @@ void startMerge(AppState& state) {
             const bool cancelled = processFinished(state);
             if (!exclude.empty()) std::remove(exclude.c_str());
             if (code != 0 || cancelled) {
-                setFailure(state, cancelled ? "Merge cancelled"
-                                            : "merge failed with exit code " + std::to_string(code));
+                setFailure(state, cancelled ? "Move cancelled"
+                                            : "move failed with exit code " + std::to_string(code));
                 return;
             }
         }
 
         for (std::size_t i = 0; i < plan.renamedCopies.size(); ++i) {
             if (cancellationRequested(state)) {
-                setFailure(state, "Merge cancelled");
+                setFailure(state, "Move cancelled");
                 return;
             }
             const RenamedCopy& copy = plan.renamedCopies[i];
@@ -242,18 +242,24 @@ void startMerge(AppState& state) {
             });
             const bool cancelled = processFinished(state);
             if (code != 0 || cancelled) {
-                setFailure(state, cancelled ? "Merge cancelled"
+                setFailure(state, cancelled ? "Move cancelled"
                                             : "renamed copy failed with exit code " +
                                                   std::to_string(code));
                 return;
             }
         }
 
+        std::string cleanupError;
+        if (!removeEmptySourceDirectories(plan.sources, cleanupError)) {
+            setFailure(state, "Files moved, but empty-folder cleanup failed: " + cleanupError);
+            return;
+        }
+
         std::lock_guard lock(state.mutex);
         state.worker.phase = AppPhase::Done;
         state.worker.progress = 1.0f;
-        state.worker.status = "Merge complete";
-        addLog(state.worker, "merge complete");
+        state.worker.status = "Move complete";
+        addLog(state.worker, "move complete");
     });
 }
 
@@ -276,7 +282,7 @@ std::string candidateLabel(const Candidate& candidate) {
 
 void drawSetup(AppState& state) {
     ImGui::TextUnformatted("SOURCE FOLDERS");
-    ImGui::TextColored(kDim, "Contents are layered in this order. Later sources only win when you choose them.");
+    ImGui::TextColored(kDim, "Files move in this order. Skipped conflict losers stay in their source.");
     ImGui::BeginChild("sources", ImVec2(0, 190), true);
     int remove = -1;
     int moveUp = -1;
@@ -434,7 +440,7 @@ void drawReview(AppState& state) {
     }
 
     ImGui::BeginDisabled(unresolved != 0);
-    if (ImGui::Button("Merge now", ImVec2(150, 36))) startMerge(state);
+    if (ImGui::Button("Move now", ImVec2(150, 36))) startMerge(state);
     ImGui::EndDisabled();
     ImGui::SameLine();
     if (ImGui::Button("Back", ImVec2(90, 36))) reset(state);
@@ -474,7 +480,7 @@ void drawApp(AppState& state) {
                      ImGuiWindowFlags_NoSavedSettings);
     ImGui::TextUnformatted("MERGE FOLDERS");
     ImGui::SameLine();
-    ImGui::TextColored(kDim, "combine many folder trees into one with rsync");
+    ImGui::TextColored(kDim, "move many folder trees into one with rsync");
     ImGui::Separator();
 
     WorkerState snapshot;
@@ -490,7 +496,7 @@ void drawApp(AppState& state) {
         if (state.thread.joinable()) state.thread.join();
         if (snapshot.phase == AppPhase::Ready) {
             ImGui::TextColored(kGood, "%s", snapshot.status.c_str());
-            if (ImGui::Button("Merge now", ImVec2(150, 36))) startMerge(state);
+            if (ImGui::Button("Move now", ImVec2(150, 36))) startMerge(state);
             ImGui::SameLine();
             if (ImGui::Button("Back", ImVec2(90, 36))) reset(state);
         } else {
@@ -509,7 +515,7 @@ void drawApp(AppState& state) {
                 cancelWork(state);
             }
         } else {
-            if (ImGui::Button("Start another merge", ImVec2(180, 36))) reset(state);
+            if (ImGui::Button("Start another move", ImVec2(180, 36))) reset(state);
         }
     }
 
