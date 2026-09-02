@@ -68,6 +68,16 @@ std::vector<std::string> buildRsyncArgs(const std::string& source,
     return args;
 }
 
+std::vector<std::string> buildRsyncCopyArgs(const std::string& source,
+                                            const std::string& destination,
+                                            bool directory, RsyncMode mode) {
+    std::vector<std::string> args{"rsync", "-a", "--info=progress2", "--no-inc-recursive"};
+    if (mode == RsyncMode::DryRun) args.push_back("--dry-run");
+    args.push_back(directory && source.back() != '/' ? source + '/' : source);
+    args.push_back(directory && destination.back() != '/' ? destination + '/' : destination);
+    return args;
+}
+
 std::string displayCommand(const std::vector<std::string>& args) {
     std::string command;
     for (const auto& arg : args) {

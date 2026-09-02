@@ -25,6 +25,9 @@ std::vector<std::string> buildRsyncArgs(const std::string& source,
                                         const std::string& destination,
                                         const std::string& excludeFile,
                                         RsyncMode mode);
+std::vector<std::string> buildRsyncCopyArgs(const std::string& source,
+                                            const std::string& destination,
+                                            bool directory, RsyncMode mode);
 std::string displayCommand(const std::vector<std::string>& args);
 int runRsync(const std::vector<std::string>& args, const RsyncCallbacks& callbacks);
 

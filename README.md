@@ -9,7 +9,10 @@ file/folder shape clashes, asks which copy to keep, then performs the merge.
 - Add source folders in the order they should be layered.
 - Choose one destination folder. A new final folder name may be typed directly.
 - Run the mandatory dry run. No merge button exists before it succeeds.
-- Resolve every conflict individually, or use one of the two bulk choices.
+- Conflicts default to keeping every copy. Extra copies are renamed with a
+  suffix such as `_collision_0001.ext`, skipping names that already exist.
+- Resolve conflicts individually, or use the rename, destination, and latest
+  source bulk choices.
 - Merge. Directories and unique files combine automatically. No unrelated
   destination files are deleted.
 

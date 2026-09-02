@@ -63,7 +63,11 @@ int main() {
     check(findConflict(plan, "shape") != nullptr, "file and folder shape conflict");
     check(findConflict(plan, oddName) != nullptr, "newline and wildcard filename conflicts");
     check(findConflict(plan, "shared-dir") == nullptr, "folders merge without conflict");
-    check(!allConflictsResolved(plan), "new conflicts start unresolved");
+    check(allConflictsResolved(plan), "collision rename resolves conflicts by default");
+    check(std::all_of(plan.conflicts.begin(), plan.conflicts.end(), [](const Conflict& conflict) {
+              return conflict.selected == kRenameCollisions;
+          }),
+          "every conflict defaults to collision rename");
 
     for (auto& conflict : plan.conflicts) {
         for (std::size_t i = 0; i < conflict.candidates.size(); ++i) {
@@ -119,6 +123,57 @@ int main() {
           "a new destination below an existing parent is allowed");
     MergePlan newPlan = inspectMerge({a.string()}, newOutput.string(), error);
     check(error.empty() && newPlan.conflicts.empty(), "new destination begins without conflicts");
+
+    const fs::path renameA = root / "rename-a";
+    const fs::path renameB = root / "rename-b";
+    const fs::path renameOut = root / "rename-out";
+    fs::create_directories(renameA);
+    fs::create_directories(renameB);
+    fs::create_directories(renameOut);
+    write(renameA / "report.txt", "first-copy");
+    write(renameB / "report.txt", "second-copy");
+    write(renameOut / "report.txt", "destination-copy");
+    write(renameOut / "report_collision_0001.txt", "already-here");
+
+    MergePlan renamePlan = inspectMerge(
+        {renameA.string(), renameB.string()}, renameOut.string(), error);
+    check(error.empty(), "rename plan inspects cleanly");
+    check(prepareMerge(renamePlan, error), "default rename plan prepares");
+    check(renamePlan.renamedCopies.size() == 2, "both incoming collisions are preserved");
+    check(renamePlan.renamedCopies.size() >= 2 &&
+              renamePlan.renamedCopies[0].toRelative == "report_collision_0002.txt" &&
+              renamePlan.renamedCopies[1].toRelative == "report_collision_0003.txt",
+          "collision numbers skip occupied names");
+
+    for (std::size_t i = 0; i < renamePlan.sources.size(); ++i) {
+        const std::string exclude = writeExcludeFile(renamePlan.exclusions[i]);
+        check(runRsync(buildRsyncArgs(renamePlan.sources[i], renamePlan.destination, exclude,
+                                      RsyncMode::Merge), {}) == 0,
+              "base merge with renamed conflicts succeeds");
+        if (!exclude.empty()) std::remove(exclude.c_str());
+    }
+    for (const auto& copy : renamePlan.renamedCopies) {
+        const fs::path source = fs::path(renamePlan.sources[copy.source]) / copy.fromRelative;
+        const fs::path destination = fs::path(renamePlan.destination) / copy.toRelative;
+        check(runRsync(buildRsyncCopyArgs(source.string(), destination.string(),
+                                          copy.kind == EntryKind::Directory,
+                                          RsyncMode::Merge), {}) == 0,
+              "collision-renamed rsync copy succeeds");
+    }
+    {
+        std::ifstream original(renameOut / "report.txt");
+        std::ifstream first(renameOut / "report_collision_0002.txt");
+        std::ifstream second(renameOut / "report_collision_0003.txt");
+        std::string originalText;
+        std::string firstText;
+        std::string secondText;
+        original >> originalText;
+        first >> firstText;
+        second >> secondText;
+        check(originalText == "destination-copy", "destination keeps original name");
+        check(firstText == "first-copy", "first incoming collision is renamed");
+        check(secondText == "second-copy", "second incoming collision is renamed");
+    }
     fs::remove_all(root);
     if (failures == 0) std::cout << "all merge plan checks passed\n";
     return failures == 0 ? 0 : 1;

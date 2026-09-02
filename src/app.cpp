@@ -122,7 +122,7 @@ void startScan(AppState& state) {
         } else {
             state.worker.phase = AppPhase::Resolve;
             state.worker.status = std::to_string(state.worker.plan.conflicts.size()) +
-                                  " conflicts need a choice";
+                                  " conflicts ready; collision rename is the default";
         }
     });
 }
@@ -158,6 +158,7 @@ void startMerge(AppState& state) {
             }
         }
 
+        const std::size_t totalSteps = plan.sources.size() + plan.renamedCopies.size();
         for (std::size_t i = 0; i < plan.sources.size(); ++i) {
             const std::string exclude = writeExcludeFile(plan.exclusions[i]);
             if (!plan.exclusions[i].empty() && exclude.empty()) {
@@ -174,10 +175,10 @@ void startMerge(AppState& state) {
                 addLog(state.worker, "$ " + displayCommand(args));
             }
             const int code = runRsync(args, {
-                .onProgress = [&state, i, total = plan.sources.size()](const RsyncProgress& progress) {
+                .onProgress = [&state, i, totalSteps](const RsyncProgress& progress) {
                     std::lock_guard lock(state.mutex);
                     state.worker.progress = (static_cast<float>(i) + progress.fraction) /
-                                            static_cast<float>(total);
+                                            static_cast<float>(totalSteps);
                     state.worker.status = progress.transferred + "  " + progress.speed +
                                           "  " + progress.eta;
                 },
@@ -192,6 +193,58 @@ void startMerge(AppState& state) {
             if (code != 0 || cancelled) {
                 setFailure(state, cancelled ? "Merge cancelled"
                                             : "merge failed with exit code " + std::to_string(code));
+                return;
+            }
+        }
+
+        for (std::size_t i = 0; i < plan.renamedCopies.size(); ++i) {
+            if (cancellationRequested(state)) {
+                setFailure(state, "Merge cancelled");
+                return;
+            }
+            const RenamedCopy& copy = plan.renamedCopies[i];
+            const fs::path source = fs::path(plan.sources[copy.source]) / copy.fromRelative;
+            const fs::path destination = fs::path(plan.destination) / copy.toRelative;
+            std::error_code ec;
+            fs::create_directories(destination.parent_path(), ec);
+            if (ec) {
+                setFailure(state, "could not create folder for " + copy.toRelative + ": " +
+                                      ec.message());
+                return;
+            }
+            const fs::file_status destinationStatus = fs::symlink_status(destination, ec);
+            if (!ec && destinationStatus.type() != fs::file_type::not_found) {
+                setFailure(state, "collision name became occupied: " + copy.toRelative);
+                return;
+            }
+
+            const auto args = buildRsyncCopyArgs(source.string(), destination.string(),
+                                                 copy.kind == EntryKind::Directory,
+                                                 RsyncMode::Merge);
+            const std::size_t step = plan.sources.size() + i;
+            {
+                std::lock_guard lock(state.mutex);
+                state.worker.currentSource = copy.source;
+                state.worker.status = "Saving collision as " + copy.toRelative;
+                addLog(state.worker, "$ " + displayCommand(args));
+            }
+            const int code = runRsync(args, {
+                .onProgress = [&state, step, totalSteps](const RsyncProgress& progress) {
+                    std::lock_guard lock(state.mutex);
+                    state.worker.progress = (static_cast<float>(step) + progress.fraction) /
+                                            static_cast<float>(totalSteps);
+                },
+                .onLine = [&state](const std::string& line) {
+                    std::lock_guard lock(state.mutex);
+                    addLog(state.worker, line);
+                },
+                .onStarted = [&state](pid_t pid) { processStarted(state, pid); },
+            });
+            const bool cancelled = processFinished(state);
+            if (code != 0 || cancelled) {
+                setFailure(state, cancelled ? "Merge cancelled"
+                                            : "renamed copy failed with exit code " +
+                                                  std::to_string(code));
                 return;
             }
         }
@@ -301,18 +354,27 @@ void selectQuick(MergePlan& plan, int source) {
     }
 }
 
+void selectRename(MergePlan& plan) {
+    for (auto& conflict : plan.conflicts) conflict.selected = kRenameCollisions;
+}
+
 void drawReview(AppState& state) {
     MergePlan& plan = state.worker.plan;
     const int unresolved = static_cast<int>(std::count_if(
-        plan.conflicts.begin(), plan.conflicts.end(),
-        [](const Conflict& conflict) { return conflict.selected < 0; }));
+        plan.conflicts.begin(), plan.conflicts.end(), [](const Conflict& conflict) {
+            return conflict.selected != kRenameCollisions &&
+                   (conflict.selected < 0 ||
+                    conflict.selected >= static_cast<int>(conflict.candidates.size()));
+        }));
 
     ImGui::Text("%zu conflicts", plan.conflicts.size());
     ImGui::SameLine();
     ImGui::TextColored(unresolved == 0 ? kGood : kWarn, "%d unresolved", unresolved);
     if (!plan.conflicts.empty()) {
         ImGui::SameLine();
-        if (ImGui::SmallButton("Keep all destination copies")) selectQuick(plan, -1);
+        if (ImGui::SmallButton("Rename all collisions")) selectRename(plan);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Keep destination copies")) selectQuick(plan, -1);
         ImGui::SameLine();
         if (ImGui::SmallButton("Use latest source")) {
             for (auto& conflict : plan.conflicts) {
@@ -343,15 +405,21 @@ void drawReview(AppState& state) {
             ImGui::TableSetColumnIndex(0);
             ImGui::TextUnformatted(conflict.relativePath.c_str());
             ImGui::TableSetColumnIndex(1);
-            const char* preview = conflict.selected < 0
-                ? "Choose a copy..."
-                : nullptr;
-            const std::string selectedLabel = conflict.selected < 0
-                ? std::string{}
-                : candidateLabel(conflict.candidates[conflict.selected]);
-            if (conflict.selected >= 0) preview = selectedLabel.c_str();
+            const bool validCandidate = conflict.selected >= 0 &&
+                conflict.selected < static_cast<int>(conflict.candidates.size());
+            const char* preview = conflict.selected == kRenameCollisions
+                ? "Rename collisions (keep every copy)"
+                : validCandidate ? nullptr : "Choose a copy...";
+            const std::string selectedLabel = validCandidate
+                ? candidateLabel(conflict.candidates[conflict.selected])
+                : std::string{};
+            if (validCandidate) preview = selectedLabel.c_str();
             ImGui::SetNextItemWidth(-1);
             if (ImGui::BeginCombo("##winner", preview)) {
+                if (ImGui::Selectable("Rename collisions (keep every copy)",
+                                      conflict.selected == kRenameCollisions)) {
+                    conflict.selected = kRenameCollisions;
+                }
                 for (std::size_t i = 0; i < conflict.candidates.size(); ++i) {
                     const std::string label = candidateLabel(conflict.candidates[i]);
                     if (ImGui::Selectable(label.c_str(), conflict.selected == static_cast<int>(i))) {

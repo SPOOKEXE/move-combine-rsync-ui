@@ -52,6 +52,15 @@ bool needsConflict(const std::vector<Candidate>& candidates) {
     });
 }
 
+bool isShapeClash(const std::vector<Candidate>& candidates) {
+    if (candidates.empty()) return false;
+    const EntryKind first = candidates.front().kind;
+    return std::any_of(candidates.begin() + 1, candidates.end(),
+                       [first](const Candidate& candidate) {
+                           return candidate.kind != first;
+                       });
+}
+
 bool pathCoveredBy(const std::string& path, const std::string& parent) {
     if (path == parent) return true;
     return path.size() > parent.size() && path.compare(0, parent.size(), parent) == 0 &&
@@ -69,6 +78,29 @@ void reducePaths(std::vector<std::string>& paths) {
         if (!covered) reduced.push_back(path);
     }
     paths = std::move(reduced);
+}
+
+bool entryExists(const fs::path& path) {
+    std::error_code ec;
+    const fs::file_status status = fs::symlink_status(path, ec);
+    return !ec && status.type() != fs::file_type::not_found;
+}
+
+bool occupiedInInputs(const MergePlan& plan, const std::string& relative) {
+    if (entryExists(fs::path(plan.destination) / relative)) return true;
+    return std::any_of(plan.sources.begin(), plan.sources.end(), [&](const std::string& source) {
+        return entryExists(fs::path(source) / relative);
+    });
+}
+
+std::string collisionName(const std::string& relative, unsigned number) {
+    const fs::path path(relative);
+    const fs::path filename = path.filename();
+    const std::string extension = filename.extension().string();
+    const std::string stem = filename.stem().string();
+    char suffix[32];
+    std::snprintf(suffix, sizeof(suffix), "_collision_%04u", number);
+    return (path.parent_path() / (stem + suffix + extension)).generic_string();
 }
 
 }  // namespace
@@ -157,11 +189,17 @@ MergePlan inspectMerge(const std::vector<std::string>& sources,
         if (!error.empty()) return plan;
     }
 
+    std::vector<std::string> shapeClashes;
     for (auto& [path, candidates] : entries) {
+        const bool belowShapeClash = std::any_of(
+            shapeClashes.begin(), shapeClashes.end(),
+            [&](const std::string& parent) { return pathCoveredBy(path, parent); });
+        if (belowShapeClash) continue;
         if (needsConflict(candidates)) {
             plan.conflicts.push_back({.relativePath = path,
                                       .candidates = std::move(candidates),
-                                      .selected = -1});
+                                      .selected = kRenameCollisions});
+            if (isShapeClash(plan.conflicts.back().candidates)) shapeClashes.push_back(path);
         }
     }
     return plan;
@@ -169,8 +207,9 @@ MergePlan inspectMerge(const std::vector<std::string>& sources,
 
 bool allConflictsResolved(const MergePlan& plan) {
     return std::all_of(plan.conflicts.begin(), plan.conflicts.end(), [](const Conflict& conflict) {
-        return conflict.selected >= 0 &&
-               conflict.selected < static_cast<int>(conflict.candidates.size());
+        return conflict.selected == kRenameCollisions ||
+               (conflict.selected >= 0 &&
+                conflict.selected < static_cast<int>(conflict.candidates.size()));
     });
 }
 
@@ -182,7 +221,41 @@ bool prepareMerge(MergePlan& plan, std::string& error) {
 
     plan.exclusions.assign(plan.sources.size(), {});
     plan.destinationRemovals.clear();
+    plan.renamedCopies.clear();
+    std::set<std::string> allocated;
     for (const auto& conflict : plan.conflicts) {
+        if (conflict.selected == kRenameCollisions) {
+            const bool destinationKeepsOriginal = std::any_of(
+                conflict.candidates.begin(), conflict.candidates.end(),
+                [](const Candidate& candidate) { return candidate.source < 0; });
+            int originalSource = -1;
+            if (!destinationKeepsOriginal) {
+                for (const auto& candidate : conflict.candidates) {
+                    if (candidate.source >= 0 &&
+                        (originalSource < 0 || candidate.source < originalSource)) {
+                        originalSource = candidate.source;
+                    }
+                }
+            }
+
+            unsigned collision = 1;
+            for (const auto& candidate : conflict.candidates) {
+                if (candidate.source < 0 || candidate.source == originalSource) continue;
+                plan.exclusions[static_cast<std::size_t>(candidate.source)].push_back(
+                    conflict.relativePath);
+                std::string renamed;
+                do {
+                    renamed = collisionName(conflict.relativePath, collision++);
+                } while (occupiedInInputs(plan, renamed) || allocated.contains(renamed));
+                allocated.insert(renamed);
+                plan.renamedCopies.push_back({.source = candidate.source,
+                                              .kind = candidate.kind,
+                                              .fromRelative = conflict.relativePath,
+                                              .toRelative = std::move(renamed)});
+            }
+            continue;
+        }
+
         const Candidate& winner = conflict.candidates[conflict.selected];
         for (const auto& candidate : conflict.candidates) {
             if (candidate.source >= 0 && candidate.source != winner.source) {

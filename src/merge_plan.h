@@ -15,10 +15,20 @@ struct Candidate {
     std::filesystem::file_time_type modified{};
 };
 
+inline constexpr int kRenameCollisions = -2;
+
 struct Conflict {
     std::string relativePath;
     std::vector<Candidate> candidates;
-    int selected = -1;  // Candidate index. Every conflict starts unresolved.
+    // Candidate index, or kRenameCollisions to preserve every copy.
+    int selected = kRenameCollisions;
+};
+
+struct RenamedCopy {
+    int source = -1;
+    EntryKind kind = EntryKind::Other;
+    std::string fromRelative;
+    std::string toRelative;
 };
 
 struct MergePlan {
@@ -27,6 +37,7 @@ struct MergePlan {
     std::vector<Conflict> conflicts;
     std::vector<std::vector<std::string>> exclusions;
     std::vector<std::string> destinationRemovals;
+    std::vector<RenamedCopy> renamedCopies;
     std::size_t entryCount = 0;
 };
 
@@ -42,8 +53,8 @@ MergePlan inspectMerge(const std::vector<std::string>& sources,
 
 bool allConflictsResolved(const MergePlan& plan);
 
-// Converts conflict choices into one anchored exclude list per source and a
-// list of incompatible destination entries that must be removed before rsync.
+// Converts conflict choices into excludes, destination replacements, and
+// collision-renamed copies. Generated names never overlap an existing entry.
 bool prepareMerge(MergePlan& plan, std::string& error);
 
 std::string formatSize(std::uintmax_t bytes);
