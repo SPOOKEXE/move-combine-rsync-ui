@@ -4,6 +4,8 @@ A small Linux Dear ImGui app for moving several directory trees into one.
 It always runs rsync in dry-run mode first, discovers overlapping files and
 file/folder shape clashes, asks which copy to keep, then performs the move.
 
+<img src="demo.png" width=800></img>
+
 ## Behavior
 
 - Add source folders in the order they should be moved and layered.
